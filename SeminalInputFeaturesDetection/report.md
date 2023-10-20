@@ -30,10 +30,6 @@ hello.c: A simple program that takes input and checks a condition. This file ser
 
 Semantics of I/O APIs: For complex scenarios (like fopen and getc), incorporate the semantics of the I/O operation. This would help understand how the size of a file or other such attributes influence the program's execution.
 Integration with Build Systems: The project can be further integrated with build systems to automate the process of applying these passes during the build phase.
-Visualization: In the future, a visualization tool can be developed to provide a graphical representation of how different variables are influenced by external input.
-Conclusion
-
-Our LLVM passes provide a foundational approach to detect seminal input features in programs. This analysis can be vital for various applications and offers a step towards understanding the influence of external inputs on program execution.
 
 
 ## Prerequisites
