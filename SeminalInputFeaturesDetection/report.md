@@ -1,6 +1,6 @@
 # Project - Milestone-1
 
-## Haojie Zhou 's Submisssion: Part2 Seminal Input Features Detection in LLVM
+## Part2 Seminal Input Features Detection in LLVM
 
 ## Introduction
 
