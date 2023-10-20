@@ -1,0 +1,7 @@
+/Users/yukino/Documents/course/csc512/project/part2/SeminalInputFeaturesDetection/build/CMakeFiles/intrinsics_gen.dir
+/Users/yukino/Documents/course/csc512/project/part2/SeminalInputFeaturesDetection/build/CMakeFiles/omp_gen.dir
+/Users/yukino/Documents/course/csc512/project/part2/SeminalInputFeaturesDetection/build/CMakeFiles/acc_gen.dir
+/Users/yukino/Documents/course/csc512/project/part2/SeminalInputFeaturesDetection/build/CMakeFiles/RISCVTargetParserTableGen.dir
+/Users/yukino/Documents/course/csc512/project/part2/SeminalInputFeaturesDetection/build/CMakeFiles/DefUseAnalysisPass.dir
+/Users/yukino/Documents/course/csc512/project/part2/SeminalInputFeaturesDetection/build/CMakeFiles/edit_cache.dir
+/Users/yukino/Documents/course/csc512/project/part2/SeminalInputFeaturesDetection/build/CMakeFiles/rebuild_cache.dir
