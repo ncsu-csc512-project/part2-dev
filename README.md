@@ -1,4 +1,4 @@
-# Key Points Detection
+# Part 2 Seminal Input Features Detection
 
 ## Overview
 This README outlines the steps to compile and build the LLVM pass for branch and pointer profiling on UNIX systems.
