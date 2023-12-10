@@ -25,7 +25,7 @@ endif()
 
 # Specify where our headers are
 include_directories(include/)
-
+include_directories(/usr/local/include)
 # Define our shared library for InputDetectionPass
 # add_library(InputDetectionPass MODULE
 #     lib/SeminalInputFeatures/InputDetectionPass.cpp

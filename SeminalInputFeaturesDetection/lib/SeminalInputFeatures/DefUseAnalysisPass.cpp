@@ -6,112 +6,275 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/IR/IRBuilder.h"
-
-
+#include "llvm/Analysis/ScalarEvolution.h"
+#include "llvm/Analysis/ScalarEvolutionExpressions.h"
+#include "nlohmann/json.hpp"
+#include <vector>
+#include <set>
+#include <fstream>
+#include <queue>
+#include <map>
+#include <unordered_set>
 using namespace llvm;
+using Json = nlohmann::json;
+struct VariableInfo {
+    std::string name;
+    int line;
 
+    VariableInfo() : name(""), line(-1) {} // Default constructor
+    VariableInfo(std::string n, int l) : name(n), line(l) {} // Parameterized constructor
+};
 namespace {
 
+
+Json jsonInfluentialVariables;
     bool isInputFunction(const Function* F) {
-        return F && (F->getName() == "scanf" || F->getName() == "fopen" || F->getName() == "getc");
+        if (!F) {
+            return false;
+        }
+
+        std::string funcName = F->getName().str();
+        if (funcName.find("scanf") != std::string::npos) {
+            return true;
+        } else if (funcName.find("fopen") != std::string::npos) {
+            return true;
+        } else if (funcName.find("getc") != std::string::npos) {
+            return true;
+        }
+        return false;
     }
 
-    void analyzeDefUseChain(Value* V, const std::string& indent = "") {
-        errs() << indent << "- Operand '";
-        if (V->hasName()) {
-            errs() << V->getName();
-        } else {
-            V->print(errs());
-        }
-        errs() << "'";
 
-        if (auto *inst = dyn_cast<Instruction>(V)) {
-            if (auto *callInst = dyn_cast<CallInst>(inst)) {
-                Function *calledFunc = callInst->getCalledFunction();
-                if (isInputFunction(calledFunc)) {
-                    errs() << " influenced by external input: " << calledFunc->getName() << " call in function " << inst->getParent()->getParent()->getName() << "\n";
-                    return;
+
+    DbgDeclareInst* findDbgDeclare(Value* value, Function &F) {
+        for (auto &BB : F) {
+            for (auto &I : BB) {
+                if (DbgDeclareInst *DbgDeclare = dyn_cast<DbgDeclareInst>(&I)) {
+                    if (DbgDeclare->getAddress() == value) {
+                        return DbgDeclare;
+                    }
                 }
             }
-
-            errs() << " is a computed value.\n";
-            for (auto &U : inst->operands()) {
-                analyzeDefUseChain(U, indent + "  ");
-            }
-        } else {
-            errs() << "\n";
         }
+        return nullptr;
     }
 
-    void analyzeComplexControlFlow(Instruction *Inst, LoopInfo &LI) {
-        errs() << "Analyzing Instruction: " << *Inst << "\n";
-
-        // Check if the instruction is part of a loop.
-        if (auto *loop = LI.getLoopFor(Inst->getParent())) {
-            auto *header = loop->getHeader();
-            // Output the loop header name or a placeholder if unnamed.
-            StringRef loopHeaderName = header->hasName() ? header->getName() : "(unnamed loop header)";
-            errs() << "Loop found with header: " << loopHeaderName << "\n";
-
-            // Output the depth of the loop.
-            errs() << "Loop depth: " << loop->getLoopDepth() << "\n";
-
-            // Output all exiting blocks of the loop.
-            SmallVector<BasicBlock*, 4> exitingBlocks;
-            loop->getExitingBlocks(exitingBlocks);
-            errs() << "Loop exiting blocks: ";
-            for (auto *exitingBlock : exitingBlocks) {
-                errs() << (exitingBlock->hasName() ? exitingBlock->getName() : "(unnamed)") << " ";
-            }
-            errs() << "\n";
+    void trackDefUseChain(Value *value, std::set<Value*>& visited, std::unordered_map<std::string, VariableInfo> &variableMap, Function &F) {
+        if (!visited.insert(value).second) {
+            return; 
         }
 
-        // Check if the instruction is a switch statement.
-        if (auto *SI = dyn_cast<SwitchInst>(Inst)) {
-            errs() << "Switch statement found with " << SI->getNumCases() << " case(s).\n";
-            for (auto Case : SI->cases()) {
-                ConstantInt *caseVal = Case.getCaseValue();
-                BasicBlock *caseDest = Case.getCaseSuccessor();
-                errs() << "Case value: " << caseVal->getValue() << ", destination block: "
-                    << (caseDest->hasName() ? caseDest->getName() : "(unnamed)") << "\n";
-            }
-        }
-    }
-
-
-
-
-    void visitor(Function &F, LoopInfo &LI) {
-        errs() << "Analyzing function: " << F.getName() << "\n";
-        
-        for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
-            Instruction *Inst = &*I;
-
-            if (auto *BI = dyn_cast<BranchInst>(Inst)) {
-                if (BI->isConditional()) {
-                  //  errs() << "Branch Instruction: " << *BI << "\n";
-                    analyzeDefUseChain(BI->getCondition());
+        if (Instruction *inst = dyn_cast<Instruction>(value)) {
+            if (LoadInst *LoadInstVar = dyn_cast<LoadInst>(inst)) {
+                Value *loadedValue = LoadInstVar->getPointerOperand();
+               // errs() << "LoadInst found, tracking: " << *loadedValue << "\n";
+                DbgDeclareInst *DbgDeclare = findDbgDeclare(loadedValue, F);
+                if (DbgDeclare && DbgDeclare->getVariable()) {
+                    std::string varName = DbgDeclare->getVariable()->getName().str();
+                    int lineNo = DbgDeclare->getDebugLoc().getLine();
+                  //  errs() << "Variable found from LoadInst: " << varName << " at line " << lineNo << "\n";
+                    variableMap[varName] = VariableInfo(varName, lineNo);
+                }
+                trackDefUseChain(loadedValue, visited, variableMap, F);
+            } else if (StoreInst *StoreInstVar = dyn_cast<StoreInst>(inst)) {
+                Value *storedValue = StoreInstVar->getValueOperand();
+                Value *storedLocation = StoreInstVar->getPointerOperand();
+               
+                trackDefUseChain(storedValue, visited, variableMap, F);
+                trackDefUseChain(storedLocation, visited, variableMap, F);
+            } else if (CallInst *CI = dyn_cast<CallInst>(inst)) {
+          
+                if (CI->getType() != Type::getVoidTy(F.getContext())) {
+                  
+                    trackDefUseChain(CI, visited, variableMap, F);  
                 }
 
+                for (auto arg = CI->arg_begin(); arg != CI->arg_end(); ++arg) {
+                    Value *argValue = *arg;
+                    trackDefUseChain(argValue, visited, variableMap, F);  
+                }
+                
+            } else {
+                for (unsigned i = 0; i < inst->getNumOperands(); ++i) {
+                    trackDefUseChain(inst->getOperand(i), visited, variableMap, F);
+                }
             }
-           // errs() << "Prepare Enter ControlFlow function! "  << "\n";
-            analyzeComplexControlFlow(Inst,LI);
         }
     }
+
+
+
+
+    void analyzeTerminator(Value *value, std::set<Value*>& visited, std::unordered_map<std::string, VariableInfo> &variableMap, Function &F) {
     
-   
-     
-   
+        if (Instruction *inst = dyn_cast<Instruction>(value)) {
+           
+            for (unsigned i = 0; i < inst->getNumOperands(); ++i) {
+               
+                trackDefUseChain(inst->getOperand(i), visited,variableMap, F);
+            }
+        }
+    }
+    void analyzeLoop(Loop *loop,std::set<Value*>& visited, std::unordered_map<std::string, VariableInfo> &variableMap,Function &F) {
+        
+        BasicBlock *header = loop->getHeader();
+        for (auto &I : *header) {
+            if (auto *BI = dyn_cast<BranchInst>(&I)) {
+                if (BI->isConditional()) {
+                   
+                    analyzeTerminator(BI->getCondition(), visited, variableMap, F);
+                }
+            }
+        }
+    }
+
+
+    void visitor(Function &F,LoopInfo &LI) {
+
+
+        std::vector<std::string> influentialVariables;
+        std::set<Value*> visited;
+        std::unordered_map<std::string, VariableInfo> variableMap;
+        std::unordered_set<std::string> ioVariables;
+        //step1: Find all loops.
+        for (Loop *loop : LI) {
+            analyzeLoop(loop, visited, variableMap, F);
+        }
+        
+        //step2: Trace the source of all variables within the function.
+        for (auto &BB : F) {
+            for (auto &I : BB) {
+                if (AllocaInst *AI = dyn_cast<AllocaInst>(&I)) {
+                    DbgDeclareInst *DbgDeclare = findDbgDeclare(AI, F);
+                    if (DbgDeclare && DbgDeclare->getVariable()) {
+                        std::string varName = DbgDeclare->getVariable()->getName().str();
+                        int lineNo = DbgDeclare->getDebugLoc().getLine();
+                       // errs() << "Variable " << varName << " allocated at line " << lineNo << "\n";
+                        variableMap[varName] = VariableInfo(varName, lineNo);
+                    }
+                }
+                if (StoreInst *SI = dyn_cast<StoreInst>(&I)) {
+                    Value *storedValue = SI->getValueOperand();
+                    Value *storedLocation = SI->getPointerOperand();
+                    trackDefUseChain(storedValue, visited, variableMap, F);
+                    trackDefUseChain(storedLocation, visited, variableMap, F);
+                }
+            }
+        }
+      
+        //step3: Search for input-related variables.
+        for (auto &BB : F) {
+            for (auto &I : BB) {
+                if (CallInst *CI = dyn_cast<CallInst>(&I)) {
+                    Function *calledFunction = CI->getCalledFunction();
+                   // errs() <<calledFunction->getName().str()<<'\n';
+                    if (isInputFunction(calledFunction)) {
+                        //errs() << "Find IO Function "<<calledFunction->getName().str()<<"\n";
+                        
+                        if (calledFunction->getName().str().find("fopen") != std::string::npos) {
+                           
+                            for (auto iter = CI->getIterator(); iter != BB.end(); ++iter) {
+                                if (StoreInst *SI = dyn_cast<StoreInst>(&*iter)) {
+                                    if (SI->getValueOperand() == CI) {
+                                        Value *storedLocation = SI->getPointerOperand();
+                                        DbgDeclareInst *DbgDeclare = findDbgDeclare(storedLocation, F);
+                                        if (DbgDeclare && DbgDeclare->getVariable()) {
+                                            std::string varName = DbgDeclare->getVariable()->getName().str();
+                                            int lineNo = DbgDeclare->getDebugLoc().getLine();
+                                            variableMap[varName] = VariableInfo(varName, lineNo);
+                                            ioVariables.insert(varName);
+                                           // errs() << "IO Variable " << varName << " used at line " << lineNo << "\n";
+                                            break; 
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // other IO functions
+                            for (auto arg = CI->arg_begin(); arg != CI->arg_end(); ++arg) {
+                                Value *argValue = *arg;
+                                DbgDeclareInst *DbgDeclare = findDbgDeclare(argValue, F);
+                                if (DbgDeclare && DbgDeclare->getVariable()) {
+                                    std::string varName = DbgDeclare->getVariable()->getName().str();
+                                    int lineNo = DbgDeclare->getDebugLoc().getLine();
+                                    variableMap[varName] = VariableInfo(varName, lineNo);
+                                    ioVariables.insert(varName); 
+                                  //  errs() << "IO Variable " << varName << " used at line " << lineNo << "\n";
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        //step4: Match the termination condition variable with the input-related variable, and return the variable name and line number.
+        if (!variableMap.empty()) {
+            errs() << "Seminal Input Feature: ";
+            bool ioVariableFound = false;
+            for (const auto &entry : variableMap) {
+                const VariableInfo &info = entry.second;
+                // Check if the variable is an IO variable or indirectly affected by an IO variable.
+                if (ioVariables.count(info.name) > 0) {
+                    errs() << "Key variable: " << info.name << ", Line: " << info.line << "\n";
+                    ioVariableFound = true;
+                }
+            }
+            // If no IO variables were found, output all variables that could potentially influence loop termination
+            if (!ioVariableFound) {
+                for (const auto &entry : variableMap) {
+                    const VariableInfo &info = entry.second;
+                    errs() << "Potential influential variable: " << info.name << ", Line: " << info.line << "\n";
+                }
+            }
+            errs() << "\n";
+        } else {
+            errs() << "No influential variables affected by external input detected.\n";
+        }
+        Json functionJson;
+        functionJson["function"] = F.getName().str();
+        Json variablesJson = Json::array();
+
+        
+        bool ioVariableFound = false;
+        for (const auto &entry : variableMap) {
+            const VariableInfo &info = entry.second;
+            if (ioVariables.count(info.name) > 0) {
+                Json variableJson;
+                variableJson["name"] = info.name;
+                variableJson["line"] = info.line;
+                variableJson["type"] = "IO";
+                variablesJson.push_back(variableJson);
+                ioVariableFound = true;
+            }
+        }
+
+        if (!ioVariableFound) {
+            for (const auto &entry : variableMap) {
+                const VariableInfo &info = entry.second;
+                Json variableJson;
+                variableJson["name"] = info.name;
+                variableJson["line"] = info.line;
+                variableJson["type"] = "Potential";
+                variablesJson.push_back(variableJson);
+            }
+        }
+
+        if (!variablesJson.empty()) {
+            functionJson["influential_variables"] = variablesJson;
+            jsonInfluentialVariables.push_back(functionJson);
+        }
+
+        
+    }
+
     struct DefUseAnalysisPass : PassInfoMixin<DefUseAnalysisPass> {
         PreservedAnalyses run(Function &F, FunctionAnalysisManager &FAM) {
             LoopInfo &LI = FAM.getResult<LoopAnalysis>(F);
-            visitor(F,LI); 
+            visitor(F,LI);
             return PreservedAnalyses::all();
         }
         static bool isRequired() { return true; }
     };
-
-
 
 }  // end of anonymous namespace
 
@@ -119,14 +282,9 @@ extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginIn
     return {
         LLVM_PLUGIN_API_VERSION, "DefUseAnalysisPass", LLVM_VERSION_STRING,
         [](PassBuilder &PB) {
-            // Here we create a local FunctionAnalysisManager for the plugin
-            FunctionAnalysisManager FAM;
-            PB.registerFunctionAnalyses(FAM);
-
             PB.registerPipelineParsingCallback(
                 [&](StringRef Name, FunctionPassManager &FPM, ArrayRef<PassBuilder::PipelineElement>) {
                     if (Name == "def-use-analysis") {
-                        errs() << "Get in! " <<"\n";
                         FPM.addPass(DefUseAnalysisPass());
                         return true;
                     }
@@ -136,4 +294,10 @@ extern "C" LLVM_ATTRIBUTE_WEAK ::llvm::PassPluginLibraryInfo llvmGetPassPluginIn
         }
     };
 }
-
+struct JsonFileWriter {
+    ~JsonFileWriter() {
+        std::ofstream file("influential_variables.json");
+        file << jsonInfluentialVariables.dump(4);
+        file.close();
+    }
+} jsonFileWriter;
